@@ -1,0 +1,501 @@
+{% extends 'base.html' %} {% block content %}
+<div class="container mt-4">
+  <h2>買い物リスト</h2>
+
+  {% if messages %}
+  <div class="messages mb-4">
+    {% for message in messages %}
+    <div class="alert alert-{{ message.tags }}">{{ message }}</div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <form method="post" class="mb-4" id="add-item-form">
+    {% csrf_token %} {% for field in form %}
+    <div class="form-group mb-3">
+      <label for="{{ field.id_for_label }}" class="form-label">
+        {{ field.label }}{% if field.field.required %}<span class="text-danger"
+          >*</span
+        >{% endif %}
+      </label>
+      {{ field }} {% if field.help_text %}
+      <small class="form-text text-muted">{{ field.help_text }}</small>
+      {% endif %} {% if field.errors %}
+      <div class="invalid-feedback d-block">
+        {% for error in field.errors %} {{ error }} {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+    <button type="submit" class="btn btn-primary" id="add-button">
+      商品を追加
+    </button>
+  </form>
+
+  <div class="row">
+    <div class="col-md-8">
+      <h3>商品一覧</h3>
+      <ul class="list-group mb-4">
+        {% for item in items %}
+        <li
+          class="list-group-item d-flex justify-content-between align-items-center"
+        >
+          <span>{{ item.name }} - ¥{{ item.price }}</span>
+          <form method="post" class="delete-form" style="display: inline">
+            {% csrf_token %}
+            <input type="hidden" name="delete_item" value="{{ item.id }}" />
+            <button
+              type="submit"
+              class="btn btn-danger btn-sm delete-button"
+              onclick="return confirm('{{ item.name }}を削除してもよろしいですか？')"
+            >
+              削除
+            </button>
+          </form>
+        </li>
+        {% empty %}
+        <li class="list-group-item text-muted">商品がありません</li>
+        {% endfor %}
+      </ul>
+    </div>
+
+    <div class="col-md-4">
+      <div class="card" id="result-card" style="display: none">
+        <div class="card-header">
+          <h3 class="card-title mb-0">合計金額</h3>
+        </div>
+        <div class="card-body">
+          <h2 class="text-primary mb-0" id="total-amount"></h2>
+          <small class="text-muted" id="calculated-at"></small>
+        </div>
+      </div>
+      <div id="loading-indicator" style="display: none">
+        <div class="card">
+          <div class="card-body text-center">
+            <div
+              class="spinner-border text-primary"
+              role="status"
+              style="width: 3rem; height: 3rem"
+            >
+              <span class="visually-hidden">Loading...</span>
+            </div>
+            <div class="mt-3" id="loading-message">計算中...</div>
+            <div class="text-muted small" id="loading-progress"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  #loading-indicator .spinner-border {
+    margin: 20px auto;
+  }
+  #loading-message {
+    color: #666;
+    font-weight: 500;
+  }
+  #loading-progress {
+    margin-top: 10px;
+  }
+  /* 無効化されたボタンのスタイル */
+  button:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+  }
+</style>
+
+<script>
+  const loadingMessages = [
+    { text: 'データを収集中...', duration: 1000 },
+    { text: '計算処理中...', duration: 1000 },
+    { text: '結果を保存中...', duration: 1000 },
+  ];
+  let currentMessageIndex = 0;
+  let isProcessing = false;
+
+  function disableAllForms() {
+    // 商品追加フォームの無効化
+    const addForm = document.getElementById('add-item-form');
+    const formInputs = addForm.querySelectorAll('input, button');
+    formInputs.forEach((input) => (input.disabled = true));
+
+    // 削除ボタンの無効化
+    const deleteButtons = document.querySelectorAll('.delete-button');
+    deleteButtons.forEach((button) => (button.disabled = true));
+  }
+
+  function enableAllForms() {
+    // 商品追加フォームの有効化
+    const addForm = document.getElementById('add-item-form');
+    const formInputs = addForm.querySelectorAll('input, button');
+    formInputs.forEach((input) => (input.disabled = false));
+
+    // 削除ボタンの有効化
+    const deleteButtons = document.querySelectorAll('.delete-button');
+    deleteButtons.forEach((button) => (button.disabled = false));
+  }
+
+  function showLoading() {
+    const resultCard = document.getElementById('result-card');
+    const loadingIndicator = document.getElementById('loading-indicator');
+    const loadingMessage = document.getElementById('loading-message');
+
+    resultCard.style.display = 'none';
+    loadingIndicator.style.display = 'block';
+    loadingMessage.textContent = loadingMessages[currentMessageIndex].text;
+    isProcessing = true;
+    disableAllForms(); // フォームを無効化
+  }
+
+  function hideLoading() {
+    const loadingIndicator = document.getElementById('loading-indicator');
+    loadingIndicator.style.display = 'none';
+    isProcessing = false;
+    enableAllForms(); // フォームを有効化
+  }
+
+  function updateLoadingMessage() {
+    const loadingMessage = document.getElementById('loading-message');
+    currentMessageIndex = (currentMessageIndex + 1) % loadingMessages.length;
+    loadingMessage.textContent = loadingMessages[currentMessageIndex].text;
+  }
+
+  function updateCalculationResult() {
+    if (!isProcessing) {
+      showLoading();
+    }
+    const resultCard = document.getElementById('result-card');
+    const totalAmount = document.getElementById('total-amount');
+    const calculatedAt = document.getElementById('calculated-at');
+
+    let currentStep = 0;
+    const loadingMessage = document.getElementById('loading-message');
+    loadingMessage.textContent = loadingMessages[currentStep].text;
+
+    function checkResult() {
+      fetch(window.location.href, {
+        headers: {
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+        credentials: 'same-origin',
+      })
+        .then((response) => response.json())
+        .then((data) => {
+          if (data.status === 'success') {
+            // 処理完了を表示する前に、ローディングメッセージを順番に表示
+            const totalDuration = data.processing_time || 5000; // デフォルト3秒
+            const stepDuration = Math.floor(
+              totalDuration / loadingMessages.length
+            );
+
+            function showNextMessage(index) {
+              if (index < loadingMessages.length) {
+                loadingMessage.textContent = loadingMessages[index].text;
+                if (index < loadingMessages.length - 1) {
+                  setTimeout(() => showNextMessage(index + 1), stepDuration);
+                } else {
+                  // 最後のメッセージを表示した後に結果を表示
+                  setTimeout(() => {
+                    totalAmount.textContent = `¥${data.total_amount}`;
+                    calculatedAt.textContent = `最終更新: ${data.calculated_at}`;
+                    hideLoading();
+                    resultCard.style.display = 'block';
+                  }, stepDuration);
+                }
+              }
+            }
+
+            showNextMessage(0);
+          } else if (data.status === 'no_result') {
+            setTimeout(checkResult, 500);
+          } else {
+            throw new Error('計算処理に失敗しました');
+          }
+        })
+        .catch((error) => {
+          console.error('Error:', error);
+          hideLoading();
+          alert('計算処理中にエラーが発生しました。もう一度お試しください。');
+        });
+    }
+
+    checkResult();
+  }
+
+  // 商品一覧を更新する関数を修正
+  function updateItemList() {
+    fetch(window.location.href, {
+      headers: {
+        'X-Requested-With': 'XMLHttpRequest',
+        'X-Update-Items': 'true',
+      },
+      credentials: 'same-origin',
+    })
+      .then((response) => response.json())
+      .then((data) => {
+        if (data.items) {
+          const itemList = document.querySelector('.list-group');
+          itemList.innerHTML =
+            data.items
+              .map(
+                (item) => `
+            <li class="list-group-item d-flex justify-content-between align-items-center">
+              <span>${item.name} - ¥${item.price}</span>
+              <form method="post" class="delete-form" style="display: inline">
+                <input type="hidden" name="csrfmiddlewaretoken" value="${
+                  document.querySelector('[name=csrfmiddlewaretoken]').value
+                }">
+                <input type="hidden" name="delete_item" value="${item.id}">
+                <button
+                  type="submit"
+                  class="btn btn-danger btn-sm delete-button"
+                >
+                  削除
+                </button>
+              </form>
+            </li>
+          `
+              )
+              .join('') ||
+            '<li class="list-group-item text-muted">商品がありません</li>';
+
+          // 新しい削除フォームにイベントリスナーを追加
+          const newDeleteForms = itemList.querySelectorAll('.delete-form');
+          newDeleteForms.forEach((form) => {
+            form.addEventListener('submit', function (e) {
+              e.preventDefault();
+              if (!confirm('本当に削除してもよろしいですか？')) {
+                return;
+              }
+              showLoading();
+
+              const formData = new FormData(form);
+              fetch(form.action, {
+                method: 'POST',
+                body: formData,
+                headers: {
+                  'X-Requested-With': 'XMLHttpRequest',
+                },
+                credentials: 'same-origin',
+              })
+                .then((response) => response.json())
+                .then((data) => {
+                  if (data.status === 'success') {
+                    alert(data.message);
+                    updateItemList();
+                    setTimeout(() => {
+                      updateCalculationResult();
+                    }, 500);
+                  } else {
+                    throw new Error(data.message || 'エラーが発生しました');
+                  }
+                })
+                .catch((error) => {
+                  console.error('Error:', error);
+                  hideLoading();
+                  alert(
+                    error.message ||
+                      'エラーが発生しました。もう一度お試しください。'
+                  );
+                })
+                .finally(() => {
+                  hideLoading();
+                });
+            });
+          });
+        }
+      });
+  }
+
+  // 商品追加・削除後の処理を修正
+  function afterItemOperation(message) {
+    alert(message);
+    updateItemList();
+
+    // ローディング表示を開始
+    showLoading();
+
+    // 計算結果を定期的にチェック
+    function checkCalculation() {
+      fetch(window.location.href, {
+        headers: {
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+        credentials: 'same-origin',
+      })
+        .then((response) => response.json())
+        .then((data) => {
+          if (data.status === 'success') {
+            // 処理完了を表示する前に、ローディングメッセージを順番に表示
+            const totalDuration = data.processing_time || 4000;
+            const stepDuration = Math.floor(
+              totalDuration / loadingMessages.length
+            );
+
+            function showNextMessage(index) {
+              if (index < loadingMessages.length) {
+                const loadingMessage =
+                  document.getElementById('loading-message');
+                loadingMessage.textContent = loadingMessages[index].text;
+                if (index < loadingMessages.length - 1) {
+                  setTimeout(() => showNextMessage(index + 1), stepDuration);
+                } else {
+                  // 最後のメッセージを表示した後に結果を表示
+                  setTimeout(() => {
+                    const resultCard = document.getElementById('result-card');
+                    const totalAmount = document.getElementById('total-amount');
+                    const calculatedAt =
+                      document.getElementById('calculated-at');
+
+                    totalAmount.textContent = `¥${data.total_amount}`;
+                    calculatedAt.textContent = `最終更新: ${data.calculated_at}`;
+                    hideLoading();
+                    resultCard.style.display = 'block';
+                  }, stepDuration);
+                }
+              }
+            }
+
+            showNextMessage(0);
+          } else if (data.status === 'no_result') {
+            setTimeout(checkCalculation, 500);
+          } else {
+            throw new Error('計算処理に失敗しました');
+          }
+        })
+        .catch((error) => {
+          console.error('Error:', error);
+          hideLoading();
+          alert('計算処理中にエラーが発生しました。もう一度お試しください。');
+        });
+    }
+
+    checkCalculation();
+  }
+
+  // フォーム送信のイベントリスナーを修正
+  document.addEventListener('DOMContentLoaded', function () {
+    const forms = document.querySelectorAll('form');
+    forms.forEach((form) => {
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+
+        if (form.classList.contains('delete-form')) {
+          // 削除フォームの場合
+          if (!confirm('本当に削除してもよろしいですか？')) {
+            return;
+          }
+          showLoading();
+
+          fetch(form.action, {
+            method: 'POST',
+            body: new FormData(form),
+            headers: {
+              'X-Requested-With': 'XMLHttpRequest',
+            },
+            credentials: 'same-origin',
+          })
+            .then((response) => response.json())
+            .then((data) => {
+              if (data.status === 'success') {
+                afterItemOperation(data.message);
+              } else {
+                throw new Error(data.message || 'エラーが発生しました');
+              }
+            })
+            .catch((error) => {
+              console.error('Error:', error);
+              hideLoading();
+              alert(
+                error.message ||
+                  'エラーが発生しました。もう一度お試しください。'
+              );
+            });
+        } else {
+          // 商品追加フォームの場合
+          const nameInput = form.querySelector('input[name="name"]');
+          const priceInput = form.querySelector('input[name="price"]');
+
+          if (!nameInput || !nameInput.value.trim()) {
+            alert('商品名を入力してください');
+            return;
+          }
+          if (!priceInput || !priceInput.value || isNaN(priceInput.value)) {
+            alert('有効な価格を入力してください');
+            return;
+          }
+
+          // デバッグ用にフォームデータの内容を確認
+          console.log('Name:', nameInput.value);
+          console.log('Price:', priceInput.value);
+
+          // FormDataを手動で作成
+          const formData = new FormData();
+          formData.append('name', nameInput.value);
+          formData.append('price', priceInput.value);
+          formData.append(
+            'csrfmiddlewaretoken',
+            form.querySelector('[name=csrfmiddlewaretoken]').value
+          );
+
+          // デバッグ用にFormDataの内容を確認
+          console.log('FormData contents:');
+          for (let pair of formData.entries()) {
+            console.log(pair[0] + ': ' + pair[1]);
+          }
+
+          showLoading();
+
+          fetch(form.action, {
+            method: 'POST',
+            body: formData,
+            headers: {
+              'X-Requested-With': 'XMLHttpRequest',
+            },
+            credentials: 'same-origin',
+          })
+            .then((response) => {
+              if (!response.ok) {
+                return response.json().then((data) => {
+                  console.error('Server response:', data);
+                  throw new Error(
+                    data.message || `HTTP error! status: ${response.status}`
+                  );
+                });
+              }
+              return response.json();
+            })
+            .then((data) => {
+              if (data.status === 'success') {
+                form.reset();
+                afterItemOperation(data.message);
+              } else {
+                throw new Error(data.message || 'エラーが発生しました');
+              }
+            })
+            .catch((error) => {
+              console.error('Error:', error);
+              hideLoading();
+              alert(
+                error.message ||
+                  'エラーが発生しました。もう一度お試しください。'
+              );
+            })
+            .finally(() => {
+              localStorage.removeItem('isCalculating');
+            });
+        }
+      });
+    });
+
+    if (localStorage.getItem('isCalculating') === 'true') {
+      showLoading();
+      localStorage.removeItem('isCalculating');
+    }
+
+    updateCalculationResult();
+  });
+</script>
+{% endblock %}
